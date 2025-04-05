@@ -3,14 +3,16 @@ const router = express.Router();
 const db = require('../db.js');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const verifyToken=require('../middleware/authenticateJWT.js');
+const authorizeRole=require('../middleware/authorizeRole.js');
 require('dotenv').config(); // Load the .env file
 
 
 const SECRET_KEY = process.env.JWT_SECRET; // Fetch the JWT_SECRET from the environment
-
+console.log('JWT_SECRET:', SECRET_KEY);
 
 // Get all users
-router.get('/', (req, res) => {
+router.get('/', verifyToken, authorizeRole('admin'), (req, res) => {
     const query = 'SELECT * FROM users';
     db.query(query, (err, results) => {
         if (err) {
@@ -47,6 +49,7 @@ router.post('/', async (req, res) => {
 // Login Route
 router.post('/login', (req, res) => {
     const { email, password } = req.body;
+    try{
     
     const query = 'SELECT * FROM users WHERE email = ?';
     db.query(query, [email], async (err, results) => {
@@ -67,25 +70,86 @@ router.post('/login', (req, res) => {
         }
 
         // Generate JWT token
-        const token = jwt.sign({ id: user.id, email: user.email, role: user.role }, SECRET_KEY, { expiresIn: '1h' });
+        const token = jwt.sign(
+            { id: user.id, email: user.email, role: user.role },
+            SECRET_KEY,
+            { expiresIn: '1h' } // Token expires in 1 hour
+        );
 
         res.json({ message: 'Login successful', token });
     });
+} catch (error) {
+    console.error('Error in /login route:', error);
+    res.status(500).json({ error: 'Something went wrong' });
+}
 });
 
 // Delete a user
-router.delete('/:id', (req, res) => {
-    const query = 'DELETE FROM users WHERE id = ?';
-    db.query(query, [req.params.id], (err, result) => {
+router.delete('/:id', verifyToken, authorizeRole('admin'), (req, res) => {
+    const userId = req.params.id;
+
+    // First, delete associated reviews
+    const deleteReviewsQuery = 'DELETE FROM reviews WHERE user_id = ?';
+    db.query(deleteReviewsQuery, [userId], (err, result) => {
         if (err) {
             return res.status(500).json({ error: err.message });
         }
-        res.json({ message: 'User deleted successfully' });
+
+        // Then, delete the user
+        const deleteUserQuery = 'DELETE FROM users WHERE id = ?';
+        db.query(deleteUserQuery, [userId], (err, result) => {
+            if (err) {
+                return res.status(500).json({ error: err.message });
+            }
+            res.json({ message: 'User and associated reviews deleted successfully' });
+        });
     });
 });
 
+//users updating details, admin and roles and the like.
+router.put('/:id', verifyToken, (req, res) => {
+    const { name, email, role, password } = req.body;
+    const userId = req.params.id;
+
+    let updateQuery = 'UPDATE users SET ';
+    const updateFields = [];
+    const updateValues = [];
+
+    if (name) {
+        updateFields.push('name = ?');
+        updateValues.push(name);
+    }
+    if (email) {
+        updateFields.push('email = ?');
+        updateValues.push(email);
+    }
+    if (role) {
+        updateFields.push('role = ?');
+        updateValues.push(role);
+    }
+    if (password) {
+        updateFields.push('password = ?');
+        updateValues.push(bcrypt.hashSync(password, 10));
+    }
+
+    if (updateFields.length === 0) {
+        return res.status(400).json({ error: 'No fields to update' });
+    }
+
+    updateQuery += updateFields.join(', ') + ' WHERE id = ?';
+    updateValues.push(userId);
+
+    db.query(updateQuery, updateValues, (err, result) => {
+        if (err) {
+            return res.status(500).json({ error: err.message });
+        }
+        res.json({ message: 'User updated successfully' });
+    });
+});
+
+
 // Middleware to verify JWT
-const verifyToken = (req, res, next) => {
+/*const verifyToken = (req, res, next) => {
     const token = req.headers['authorization'];
 
     if (!token) {
@@ -99,7 +163,7 @@ const verifyToken = (req, res, next) => {
         req.user = decoded;
         next();
     });
-};
+};*/
 
 // Example of a protected route
 router.get('/profile', verifyToken, (req, res) => {
