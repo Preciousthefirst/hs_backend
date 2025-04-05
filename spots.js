@@ -32,4 +32,37 @@ router.post('/', authenticateJWT, (req, res) => {
     });
 });
 
+//update a spot(PUT)
+router.put('/:id', authenticateJWT, (req, res) => {
+    const { title, description, price, location } = req.body;
+    const { id } = req.params;
+
+    const query = 'UPDATE spots SET title = ?, description = ?, price = ?, location = ? WHERE id = ?';
+    db.query(query, [title, description, price, location, id], (err, result) => {
+        if (err) {
+            return res.status(500).json({ error: err.message });
+        }
+        if (result.affectedRows === 0) {
+            return res.status(404).json({ message: 'Spot not found' });
+        }
+        res.json({ message: 'Spot updated successfully' });
+    });
+});
+
+//delete a spot(DELETE)
+router.delete('/:id', authenticateJWT, (req, res) => {
+    const { id } = req.params;
+
+    const query = 'DELETE FROM spots WHERE id = ?';
+    db.query(query, [id], (err, result) => {
+        if (err) {
+            return res.status(500).json({ error: err.message });
+        }
+        if (result.affectedRows === 0) {
+            return res.status(404).json({ message: 'Spot not found' });
+        }
+        res.json({ message: 'Spot deleted successfully' });
+    });
+});
+
 module.exports = router;
