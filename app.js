@@ -7,18 +7,22 @@ const app = express();
 const port = process.env.PORT || 3000;
 
 // Middleware
-app.use(bodyParser.json());
+//app.use(bodyParser.json());
+app.use(express.json());
 
 
 // Import routes
-const userRoutes = require('./routes/users');
+const userRoutes = require('./routes/users'); 
 const spotRoutes = require('./routes/spots');
 const reviewRoutes = require('./routes/reviews');
+
 
 // Use routes
 app.use('/users', userRoutes);
 app.use('/spots', spotRoutes);
 app.use('/reviews', reviewRoutes);
+app.use('/uploads', express.static('uploads'));
+
 
 
 console.log('User routes loaded');
