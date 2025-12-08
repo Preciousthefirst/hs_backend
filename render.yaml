@@ -1,0 +1,20 @@
+# Render Blueprint - Optional configuration file
+# This makes deployment easier but is not required
+
+services:
+  - type: web
+    name: spotlight-uganda-backend
+    env: node
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+    # Note: Add other environment variables in Render dashboard:
+    # - MONGO_URI
+    # - JWT_SECRET
+    # - FRONTEND_URL
+    # - GOOGLE_PLACES_API_KEY
+

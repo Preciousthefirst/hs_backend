@@ -1,0 +1,124 @@
+curl -X POST http://localhost:3000/users -H "Content-Type: application/json" -d '{"name": "Regular User", "email": "user@example.com", "password": "userpass", "role": "user"}'
+
+{
+  "name": "Admin User",
+  "email": "admin@example.com",
+  "password": "adminpass",
+  "role": "admin"
+}
+
+curl -X POST http://localhost:3000/users -H "Content-Type: application/json" -d '{"name": "Admin User", "email": "goodgal@example.com", "password": "adminpass", "role": "admin"}'
+
+curl -X POST http://localhost:3000/users -H "Content-Type: application/json" -d "{"name": "Admin User", "email": "goodgal@example.com", "password": "adminpass", "role": "admin"}"
+
+curl -X POST http://localhost:3000/users -H "Content-Type: application/json" -d "{\"name\": \"Admin User\", \"email\": \"goodgal@example.com\", \"password\": \"adminpass\", \"role\": \"admin\"}" to register user in cmd prompt
+
+curl -X POST http://localhost:3000/users/login -H "Content-Type: application/json" -d "{\"email\": \"goodgal@example.com\", \"password\": \"adminpass\"}" 
+
+"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6NiwiZW1haWwiOiJnb29kZ2FsQGV4YW1wbGUuY29tIiwicm9sZSI6ImFkbWluIiwiaWF0IjoxNzQzNjAzMjcxLCJleHAiOjE3NDM2MDY4NzF9.eVrmWl96NOSq_KgbILl4iGpCdzvqqlgekud7dFQEEsE"}
+
+curl -X GET http://localhost:3000/users -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6NiwiZW1haWwiOiJnb29kZ2FsQGV4YW1wbGUuY29tIiwicm9sZSI6ImFkbWluIiwiaWF0IjoxNzQzNjAzMjcxLCJleHAiOjE3NDM2MDY4NzF9.eVrmWl96NOSq_KgbILl4iGpCdzvqqlgekud7dFQEEsE"
+
+curl -X DELETE http://localhost:3000/users/3 -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6NiwiZW1haWwiOiJnb29kZ2FsQGV4YW1wbGUuY29tIiwicm9sZSI6ImFkbWluIiwiaWF0IjoxNzQzNjAzMjcxLCJleHAiOjE3NDM2MDY4NzF9.eVrmWl96NOSq_KgbILl4iGpCdzvqqlgekud7dFQEEsE" to delete a user as admin
+
+curl -X DELETE http://localhost:3000/users/2 -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
+
+curl -X PUT http://localhost:3000/users/2 \
+-H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6NiwiZW1haWwiOiJnb29kZ2FsQGV4YW1wbGUuY29tIiwicm9sZSI6ImFkbWluIiwiaWF0IjoxNzQzNjAzMjcxLCJleHAiOjE3NDM2MDY4NzF9.eVrmWl96NOSq_KgbILl4iGpCdzvqqlgekud7dFQEEsE" \
+-H "Content-Type: application/json" \
+-d "{\"name\": \"Updated User\", \"role\": \"admin\"}"  incorrect bse windows doesn't read / as a new line or contituation.
+
+curl -X PUT http://localhost:3000/users/2 -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6NiwiZW1haWwiOiJnb29kZ2FsQGV4YW1wbGUuY29tIiwicm9sZSI6ImFkbWluIiwiaWF0IjoxNzQzNjAzMjcxLCJleHAiOjE3NDM2MDY4NzF9.eVrmWl96NOSq_KgbILl4iGpCdzvqqlgekud7dFQEEsE" -H "Content-Type: application/json" -d "{\"name\": \"Updated User\", \"role\": \"admin\"}"
+
+curl -X POST http://localhost:3000/users/logout -H "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6NiwiZW1haWwiOiJnb29kZ2FsQGV4YW1wbGUuY29tIiwicm9sZSI6ImFkbWluIiwiaWF0IjoxNzQzNjAzMjcxLCJleHAiOjE3NDM2MDY4NzF9.eVrmWl96NOSq_KgbILl4iGpCdzvqqlgekud7dFQEEsE"
+
+
+blacklist
+logout route
+const blacklist = new Set(); // Use a Set to store blacklisted tokens (for simplicity)
+
+router.post('/logout', verifyToken, (req, res) => {
+    const token = req.headers['authorization'].split(' ')[1];
+    blacklist.add(token); // Add the token to the blacklist
+    res.json({ message: 'Logged out successfully' });
+});
+
+modify middleware
+const jwt = require('jsonwebtoken');
+const blacklist = require('../routes/users').blacklist; // Import the blacklist
+
+const verifyToken = (req, res, next) => {
+    const token = req.headers['authorization'];
+
+    if (!token) {
+        return res.status(403).json({ error: 'No token provided' });
+    }
+
+    const actualToken = token.split(' ')[1];
+
+    // Check if the token is blacklisted
+    if (blacklist.has(actualToken)) {
+        return res.status(401).json({ error: 'Token has been invalidated' });
+    }
+
+    jwt.verify(actualToken, process.env.JWT_SECRET, (err, decoded) => {
+        if (err) {
+            return res.status(401).json({ error: 'Unauthorized' });
+        }
+        req.user = decoded;
+        next();
+    });
+};
+
+module.exports = verifyToken;
+
+3/4/25
+eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6NiwiZW1haWwiOiJnb29kZ2FsQGV4YW1wbGUuY29tIiwicm9sZSI6ImFkbWluIiwiaWF0IjoxNzQzNjk4MTY3LCJleHAiOjE3NDM3MDE3Njd9.YNlGOaNnzU9GHgdHUN8gF8wxKlAiiAlwPGHpKG6n2XU
+
+
+curl -X POST http://localhost:3000/users/login -H "Content-Type: application/json" -d "{\"email\": \"john@example.com\", \"password\": \"password123\"}" 
+
+
+curl -X POST http://localhost:3000/spots -H "Content-Type: application/json" -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6NiwiZW1haWwiOiJnb29kZ2FsQGV4YW1wbGUuY29tIiwicm9sZSI6ImFkbWluIiwiaWF0IjoxNzQzNjk4MTY3LCJleHAiOjE3NDM3MDE3Njd9.YNlGOaNnzU9GHgdHUN8gF8wxKlAiiAlwPGHpKG6n2XU" -d "{\"title\": \"Cozy Café\", \"description\": \"A quiet café with great coffee\", \"price\": 5000, \"location\": \"Kampala, Uganda\", \"created_by\": 6}"
+
+curl -X PUT http://localhost:3000/spots/2 -H "Content-Type: application/json" -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6NiwiZW1haWwiOiJnb29kZ2FsQGV4YW1wbGUuY29tIiwicm9sZSI6ImFkbWluIiwiaWF0IjoxNzQzNjk4MTY3LCJleHAiOjE3NDM3MDE3Njd9.YNlGOaNnzU9GHgdHUN8gF8wxKlAiiAlwPGHpKG6n2XU" -d "{\"title\": \"Cozy Café Updated\", \"description\": \"Now with free WiFi!\", \"price\": 6000, \"location\": \"Kampala, Uganda\"}"
+
+curl -X DELETE http://localhost:3000/spots/4 -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6NiwiZW1haWwiOiJnb29kZ2FsQGV4YW1wbGUuY29tIiwicm9sZSI6ImFkbWluIiwiaWF0IjoxNzQzNjk4MTY3LCJleHAiOjE3NDM3MDE3Njd9.YNlGOaNnzU9GHgdHUN8gF8wxKlAiiAlwPGHpKG6n2XU" -H "Content-Type: application/json"
+
+curl -X POST http://localhost:3000/users -H "Content-Type: application/json" -d "{\"name\": \"Peter Doe\", \"email\": \"peter@example.com\", \"password\": \"password456\", \"role\": \"user\"}"
+
+curl -X POST http://localhost:3000/users/login -H "Content-Type: application/json" -d "{\"email\": \"peter@example.com\", \"password\": \"password456\"}"
+"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6NywiZW1haWwiOiJwZXRlckBleGFtcGxlLmNvbSIsInJvbGUiOiJ1c2VyIiwiaWF0IjoxNzQzODMxOTY2LCJleHAiOjE3NDM4MzU1NjZ9.zAl5Ex8T-AtDmfGCG1zvbAam1SUejpUkYIu6YHe2Ywk"
+
+curl -X POST http://localhost:3000/spots -H "Content-Type: application/json" -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6NywiZW1haWwiOiJwZXRlckBleGFtcGxlLmNvbSIsInJvbGUiOiJ1c2VyIiwiaWF0IjoxNzQzODMxOTY2LCJleHAiOjE3NDM4MzU1NjZ9.zAl5Ex8T-AtDmfGCG1zvbAam1SUejpUkYIu6YHe2Ywk" -d "{\"title\": \"nana\", \"description\": \"A cheap spot. Good food\", \"price\": 5000, \"location\": \"Entebbe\", \"created_by\": 7}"
+
+curl -X DELETE http://localhost:3000/spots/5 -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6NywiZW1haWwiOiJwZXRlckBleGFtcGxlLmNvbSIsInJvbGUiOiJ1c2VyIiwiaWF0IjoxNzQzODMxOTY2LCJleHAiOjE3NDM4MzU1NjZ9.zAl5Ex8T-AtDmfGCG1zvbAam1SUejpUkYIu6YHe2Ywk"
+
+curl -X PUT http://localhost:3000/spots/5 -H "Content-Type: application/json" -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6NywiZW1haWwiOiJwZXRlckBleGFtcGxlLmNvbSIsInJvbGUiOiJ1c2VyIiwiaWF0IjoxNzQzODMxOTY2LCJleHAiOjE3NDM4MzU1NjZ9.zAl5Ex8T-AtDmfGCG1zvbAam1SUejpUkYIu6YHe2Ywk" -d "{\"title\": \"Updated Spot Title\", \"description\": \"Updated description\", \"price\": 7000, \"location\": \"Updated Location\"}"
+
+filtering
+
+curl -X GET "http://localhost:3000/spots?price=5000" this worked fine but we want to change this to ranges instead.instead f just solid prices we need to do cheap,expensive etc..
+
+curl -X GET "http://localhost:3000/spots?location=Entebbe"
+ we're having an isuue with the getting spots for example if its Kampala the filter, it also brings Entebbe the sql part is fine I run the command for only kam and that's what it returned so that's something to come back to.
+
+in short for that it returns all the spots not just the one. 
+
+curl -X GET "http://localhost:3000/spots?created_by=2"
+for this one on the users side it should show the name of user not id if you get what I mean.
+
+curl -X GET "http://localhost:3000/spots?price=5000"
+curl -X GET "http://localhost:3000/spots?price=1000&location=Kampala"
+curl -X GET "http://localhost:3000/spots?price=1000&location=Kampala"
+
+images
+curl -X POST http://localhost:3000/spots \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -F "title=Test Spot" \
+  -F "description=Beautiful view" \
+  -F "price=free" \
+  -F "location=Kampala" \
+  -F "created_by=1" \
+  -F "photo=@/full/path/to/image.jpg"
+have to log in and register properly.
