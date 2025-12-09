@@ -1,7 +1,7 @@
 const express = require('express');
-const router = express.Router(); // Define the router object
-const db = require('../db.js'); 
-const authenticateJWT = require('../middleware/authenticateJWT'); // Make sure this is imported
+const router = express.Router();
+const { Review, User, Business, Media, ReviewLike, ReviewReport, Subscription } = require('../db.js');
+const authenticateJWT = require('../middleware/authenticateJWT');
 const authorizeRole = require('../middleware/authorizeRole');
 const multer = require('multer');
 const upload = multer({ dest: 'uploads/' });
@@ -9,168 +9,141 @@ const { awardPoints, deductPoints, checkMilestones } = require('../utils/gamific
 const { getCoordinatesFromAddress } = require('../utils/geocoding');
 
 // Get top-rated reviews globally
-router.get('/top', (req, res) => {
+router.get('/top', async (req, res) => {
     const limit = parseInt(req.query.limit) || 10;
 
-    const query = `
-        SELECT r.*, u.username 
-        FROM reviews r
-        JOIN users u ON r.user_id = u.id
-        ORDER BY r.rating DESC, r.created_at DESC
-        LIMIT ?
-    `;
+    try {
+        const reviews = await Review.find()
+            .populate('user_id', 'name')
+            .sort({ rating: -1, createdAt: -1 })
+            .limit(limit)
+            .lean();
 
-    db.query(query, [limit], (err, results) => {
-        if (err) return res.status(500).json({ error: 'Server error.' });
-        res.json(results);
-    });
+        const formattedReviews = reviews.map(r => ({
+            ...r,
+            id: r._id.toString(),
+            user_id: r.user_id._id.toString(),
+            username: r.user_id.name,
+            created_at: r.createdAt
+        }));
+
+        res.json(formattedReviews);
+    } catch (err) {
+        console.error('Error fetching top reviews:', err);
+        res.status(500).json({ error: 'Server error.' });
+    }
 });
-
-// Get top-rated reviews for a specific spot
-/*router.get('/spot/:spotId/top', (req, res) => {
-    const spotId = req.params.spotId;
-    const limit = parseInt(req.query.limit) || 5;
-
-    const query = `
-        SELECT r.*, u.username 
-        FROM reviews r
-        JOIN users u ON r.user_id = u.id
-        WHERE r.spot_id = ?
-        ORDER BY r.rating DESC, r.created_at DESC
-        LIMIT ?
-    `;
-
-    db.query(query, [spotId, limit], (err, results) => {
-        if (err) return res.status(500).json({ error: 'Server error.' });
-        res.json(results);
-    });
-});*/
 
 // Get reported reviews (for admin/moderation)
-router.get('/reported/all', authenticateJWT, authorizeRole(['admin']), (req, res) => {
-    const query = `
-        SELECT
-            r.id AS review_id,
-            r.text AS review_content,
-            COUNT(rr.id) AS report_count,
-            GROUP_CONCAT(rr.reason SEPARATOR '; ') AS report_reasons,
-            GROUP_CONCAT(u.name SEPARATOR '; ') AS reporting_users
-        FROM
-            review_reports rr
-        JOIN
-            reviews r ON rr.review_id = r.id
-        JOIN
-            users u ON rr.user_id = u.id
-        GROUP BY
-            r.id
-        ORDER BY
-            report_count DESC
-    `;
+router.get('/reported/all', authenticateJWT, authorizeRole(['admin']), async (req, res) => {
+    try {
+        const reports = await ReviewReport.find()
+            .populate('review_id', 'text')
+            .populate('user_id', 'name')
+            .lean();
 
-    db.query(query, (err, results) => {
-        if (err) {
-            console.error('Error fetching reported reviews:', err);
-            return res.status(500).json({ error: 'Server error.' });
-        }
-
-        res.json(results);
-    });
-});
-
-//get reviews
-/*router.get('/:spotId', (req, res) => {
-
-    console.log('Received GET request for spotId:', req.params.spotId);
-    const query = 'SELECT * FROM reviews WHERE spot_id = ?';
-    db.query(query, [req.params.spotId], (err, results) => {
-        if (err) {
-            return res.status(500).json({ error: err.message });
-        }
-        res.json(results);
-    });
-});*/
-
-// GET all reviews with business + media info (returns media as array)
-router.get('/', (req, res) => {
-    const query = `
-        SELECT 
-            r.id AS review_id, r.user_id, r.rating, r.text, r.tags, r.created_at, r.updated_at,
-            b.name AS business_name, b.division, b.category, b.address,
-            u.name AS username, u.points,
-            m.id AS media_id, m.media_url, m.media_type,
-            (SELECT COUNT(*) FROM review_likes WHERE review_id = r.id AND is_like = 1) AS likes,
-            0 AS dislikes
-        FROM reviews r
-        JOIN businesses b ON r.business_id = b.id
-        JOIN users u ON r.user_id = u.id
-        LEFT JOIN media m ON r.business_id = m.business_id
-        ORDER BY r.created_at DESC
-    `;
-
-    db.query(query, (err, results) => {
-        if (err) {
-            console.error('Error fetching all reviews:', err);
-            return res.status(500).json({ error: 'Error fetching all reviews' });
-        }
-
-        // 🧠 Rebuild response to group media by review
-        const reviewsMap = new Map();
-
-        results.forEach(row => {
-            if (!reviewsMap.has(row.review_id)) {
-                // Parse tags JSON if it exists
-                let tags = [];
-                try {
-                    if (row.tags) {
-                        tags = typeof row.tags === 'string' ? JSON.parse(row.tags) : row.tags;
-                    }
-                } catch (e) {
-                    console.error('Error parsing tags JSON:', e);
-                }
-
-                reviewsMap.set(row.review_id, {
-                    id: row.review_id,
-                    user_id: row.user_id,
-                    username: row.username,
-                    points: row.points,
-                    rating: row.rating,
-                    text: row.text,
-                    tags: tags,
-                    created_at: row.created_at,
-                    updated_at: row.updated_at,
-                    business: {
-                        name: row.business_name,
-                        division: row.division,
-                        category: row.category,
-                        address: row.address
-                    },
-                    media: [],
-                    likes: row.likes,
-                    dislikes: row.dislikes
-                });
+        // Group reports by review
+        const reportsByReview = {};
+        reports.forEach(report => {
+            const reviewId = report.review_id._id.toString();
+            if (!reportsByReview[reviewId]) {
+                reportsByReview[reviewId] = {
+                    review_id: reviewId,
+                    review_content: report.review_id.text,
+                    report_count: 0,
+                    report_reasons: [],
+                    reporting_users: []
+                };
             }
-
-            if (row.media_id && row.media_url) {
-                reviewsMap.get(row.review_id).media.push({
-                    id: row.media_id,
-                    url: row.media_url,
-                    type: row.media_type
-                });
-            }
+            reportsByReview[reviewId].report_count++;
+            reportsByReview[reviewId].report_reasons.push(report.reason);
+            reportsByReview[reviewId].reporting_users.push(report.user_id.name);
         });
 
-        // Convert map → array
-        const reviews = Array.from(reviewsMap.values());
-        res.json(reviews);
-    });
+        const results = Object.values(reportsByReview).map(r => ({
+            ...r,
+            report_reasons: r.report_reasons.join('; '),
+            reporting_users: r.reporting_users.join('; ')
+        })).sort((a, b) => b.report_count - a.report_count);
+
+        res.json(results);
+    } catch (err) {
+        console.error('Error fetching reported reviews:', err);
+        res.status(500).json({ error: 'Server error.' });
+    }
+});
+
+// GET all reviews with business + media info (returns media as array)
+router.get('/', async (req, res) => {
+    try {
+        const reviews = await Review.find()
+            .populate('user_id', 'name points')
+            .populate('business_id', 'name division category address')
+            .sort({ createdAt: -1 })
+            .lean();
+
+        // Get all media for all businesses
+        const businessIds = [...new Set(reviews.map(r => r.business_id._id.toString()))];
+        const allMedia = await Media.find({ business_id: { $in: businessIds } }).lean();
+
+        // Get likes count for all reviews
+        const reviewIds = reviews.map(r => r._id);
+        const likesCounts = await ReviewLike.aggregate([
+            { $match: { review_id: { $in: reviewIds }, is_like: true } },
+            { $group: { _id: '$review_id', count: { $sum: 1 } } }
+        ]);
+
+        const likesMap = {};
+        likesCounts.forEach(item => {
+            likesMap[item._id.toString()] = item.count;
+        });
+
+        // Group media by business_id
+        const mediaByBusiness = {};
+        allMedia.forEach(m => {
+            const businessId = m.business_id.toString();
+            if (!mediaByBusiness[businessId]) {
+                mediaByBusiness[businessId] = [];
+            }
+            mediaByBusiness[businessId].push({
+                id: m._id.toString(),
+                url: m.media_url,
+                type: m.media_type
+            });
+        });
+
+        const formattedReviews = reviews.map(r => ({
+            id: r._id.toString(),
+            user_id: r.user_id._id.toString(),
+            username: r.user_id.name,
+            points: r.user_id.points,
+            rating: r.rating,
+            text: r.text,
+            tags: r.tags || [],
+            created_at: r.createdAt,
+            updated_at: r.updatedAt,
+            business: {
+                name: r.business_id.name,
+                division: r.business_id.division,
+                category: r.business_id.category,
+                address: r.business_id.address
+            },
+            media: mediaByBusiness[r.business_id._id.toString()] || [],
+            likes: likesMap[r._id.toString()] || 0,
+            dislikes: 0
+        }));
+
+        res.json(formattedReviews);
+    } catch (err) {
+        console.error('Error fetching all reviews:', err);
+        res.status(500).json({ error: 'Error fetching all reviews' });
+    }
 });
 
 // ============================================================================
 // 🔍 GET /reviews/search?q=keyword — Search reviews by tags (PUBLIC - no auth required)
 // ============================================================================
-// This is the core discovery feature: search for hangout spots by tags/moods
-// Example: /reviews/search?q=date night OR /reviews/search?q=family group activities
-router.get('/search', (req, res) => {
+router.get('/search', async (req, res) => {
     const { q } = req.query;
 
     if (!q || q.trim() === '') {
@@ -181,7 +154,7 @@ router.get('/search', (req, res) => {
         });
     }
 
-    // Split search query into individual words (for multi-word searches like "date night")
+    // Split search query into individual words
     const searchTerms = q.trim()
         .toLowerCase()
         .split(/\s+/)
@@ -195,295 +168,290 @@ router.get('/search', (req, res) => {
         });
     }
 
-    // Build WHERE clause to match any of the search terms in the tags JSON
-    // Tags are stored as JSON array, so we search using LIKE for case-insensitive matching
-    // Match both JSON array format: ["tag1", "tag2"] and individual tags
-    // Use OR for multiple search terms (reviews matching ANY term)
-    const whereClause = searchTerms.map(() => `(LOWER(r.tags) LIKE ? OR LOWER(r.tags) LIKE ?)`).join(' OR ');
-    const tagParams = searchTerms.flatMap(term => [`%"${term}"%`, `%${term}%`]); // Match JSON format and plain text
+    try {
+        // Search for reviews where tags array contains any of the search terms (case-insensitive)
+        // Build query to match any tag that contains any search term
+        const tagQueries = searchTerms.map(term => ({
+            tags: { $regex: term, $options: 'i' }
+        }));
+        
+        const reviews = await Review.find({
+            $or: tagQueries
+        })
+            .populate('user_id', 'name points')
+            .populate('business_id', 'name division category address description')
+            .sort({ createdAt: -1 })
+            .lean();
 
-    const query = `
-        SELECT 
-            r.id AS review_id, 
-            r.user_id, 
-            r.rating, 
-            r.text, 
-            r.tags,
-            r.created_at, 
-            r.updated_at,
-            b.id AS business_id,
-            b.name AS business_name, 
-            b.division, 
-            b.category, 
-            b.address,
-            b.description AS business_description,
-            u.name AS username, 
-            u.points,
-            m.id AS media_id, 
-            m.media_url, 
-            m.media_type,
-            (SELECT COUNT(*) FROM review_likes WHERE review_id = r.id AND is_like = 1) AS likes,
-            0 AS dislikes
-        FROM reviews r
-        JOIN businesses b ON r.business_id = b.id
-        JOIN users u ON r.user_id = u.id
-        LEFT JOIN media m ON r.business_id = m.business_id
-        WHERE ${whereClause}
-        ORDER BY r.created_at DESC
-    `;
+        // Get media and likes
+        const businessIds = [...new Set(reviews.map(r => r.business_id._id.toString()))];
+        const reviewIds = reviews.map(r => r._id);
+        
+        const [allMedia, likesCounts] = await Promise.all([
+            Media.find({ business_id: { $in: businessIds } }).lean(),
+            ReviewLike.aggregate([
+                { $match: { review_id: { $in: reviewIds }, is_like: true } },
+                { $group: { _id: '$review_id', count: { $sum: 1 } } }
+            ])
+        ]);
 
-    db.query(query, tagParams, (err, results) => {
-        if (err) {
-            console.error('Error searching reviews by tags:', err);
-            return res.status(500).json({ error: 'Error searching reviews' });
-        }
-
-        // 🧠 Group media by review (same structure as global /reviews)
-        const reviewsMap = new Map();
-
-        results.forEach(row => {
-            if (!reviewsMap.has(row.review_id)) {
-                // Parse tags JSON if it exists
-                let tags = [];
-                try {
-                    if (row.tags) {
-                        tags = typeof row.tags === 'string' ? JSON.parse(row.tags) : row.tags;
-                    }
-                } catch (e) {
-                    console.error('Error parsing tags JSON:', e);
-                }
-
-                reviewsMap.set(row.review_id, {
-                    id: row.review_id,
-                    user_id: row.user_id,
-                    username: row.username,
-                    points: row.points,
-                    rating: row.rating,
-                    text: row.text,
-                    tags: tags,
-                    created_at: row.created_at,
-                    updated_at: row.updated_at,
-                    business: {
-                        id: row.business_id,
-                        name: row.business_name,
-                        division: row.division,
-                        category: row.category,
-                        address: row.address,
-                        description: row.business_description
-                    },
-                    media: [],
-                    likes: row.likes,
-                    dislikes: row.dislikes
-                });
-            }
-
-            if (row.media_id && row.media_url) {
-                reviewsMap.get(row.review_id).media.push({
-                    id: row.media_id,
-                    url: row.media_url,
-                    type: row.media_type
-                });
-            }
+        const likesMap = {};
+        likesCounts.forEach(item => {
+            likesMap[item._id.toString()] = item.count;
         });
 
-        // Convert map → array
-        const reviews = Array.from(reviewsMap.values());
-        
-        // Return results with search metadata
+        const mediaByBusiness = {};
+        allMedia.forEach(m => {
+            const businessId = m.business_id.toString();
+            if (!mediaByBusiness[businessId]) {
+                mediaByBusiness[businessId] = [];
+            }
+            mediaByBusiness[businessId].push({
+                id: m._id.toString(),
+                url: m.media_url,
+                type: m.media_type
+            });
+        });
+
+        const formattedReviews = reviews.map(r => ({
+            id: r._id.toString(),
+            user_id: r.user_id._id.toString(),
+            username: r.user_id.name,
+            points: r.user_id.points,
+            rating: r.rating,
+            text: r.text,
+            tags: r.tags || [],
+            created_at: r.createdAt,
+            updated_at: r.updatedAt,
+            business: {
+                id: r.business_id._id.toString(),
+                name: r.business_id.name,
+                division: r.business_id.division,
+                category: r.business_id.category,
+                address: r.business_id.address,
+                description: r.business_id.description
+            },
+            media: mediaByBusiness[r.business_id._id.toString()] || [],
+            likes: likesMap[r._id.toString()] || 0,
+            dislikes: 0
+        }));
+
         res.json({
             query: q,
-            results_count: reviews.length,
-            reviews: reviews
+            results_count: formattedReviews.length,
+            reviews: formattedReviews
         });
-    });
+    } catch (err) {
+        console.error('Error searching reviews by tags:', err);
+        res.status(500).json({ error: 'Error searching reviews' });
+    }
 });
 
 // Get all reviews with business info (global)
-router.get('/all', (req, res) => {
-    const query = `
-        SELECT r.id, r.user_id, r.rating, r.text, r.created_at, r.updated_at,
-               b.name AS business_name, b.division, b.category, b.address,
-               u.name AS username, u.points,
-               (SELECT COUNT(*) FROM review_likes WHERE review_id = r.id AND is_like = 1) AS likes,
-               0 AS dislikes
-        FROM reviews r
-        JOIN businesses b ON r.business_id = b.id
-        JOIN users u ON r.user_id = u.id
-        ORDER BY r.created_at DESC
-    `;
+router.get('/all', async (req, res) => {
+    try {
+        const reviews = await Review.find()
+            .populate('user_id', 'name points')
+            .populate('business_id', 'name division category address')
+            .sort({ createdAt: -1 })
+            .lean();
 
-    db.query(query, (err, results) => {
-        if (err) {
-            console.error('Error fetching reviews:', err);
-            return res.status(500).json({ error: 'Error fetching reviews' });
-        }
-        res.json(results);
-    });
+        const reviewIds = reviews.map(r => r._id);
+        const likesCounts = await ReviewLike.aggregate([
+            { $match: { review_id: { $in: reviewIds }, is_like: true } },
+            { $group: { _id: '$review_id', count: { $sum: 1 } } }
+        ]);
+
+        const likesMap = {};
+        likesCounts.forEach(item => {
+            likesMap[item._id.toString()] = item.count;
+        });
+
+        const formattedReviews = reviews.map(r => ({
+            id: r._id.toString(),
+            user_id: r.user_id._id.toString(),
+            rating: r.rating,
+            text: r.text,
+            created_at: r.createdAt,
+            updated_at: r.updatedAt,
+            business_name: r.business_id.name,
+            division: r.business_id.division,
+            category: r.business_id.category,
+            address: r.business_id.address,
+            username: r.user_id.name,
+            points: r.user_id.points,
+            likes: likesMap[r._id.toString()] || 0,
+            dislikes: 0
+        }));
+
+        res.json(formattedReviews);
+    } catch (err) {
+        console.error('Error fetching reviews:', err);
+        res.status(500).json({ error: 'Error fetching reviews' });
+    }
 });
 
 // GET reviews by business ID
-router.get('/business/:businessId', (req, res) => {
-    const query = `
-        SELECT r.id, r.user_id, r.rating, r.text, r.created_at, r.updated_at,
-               b.name AS business_name, b.division, b.category, b.address,
-               u.name AS username, u.points,
-               (SELECT COUNT(*) FROM review_likes WHERE review_id = r.id AND is_like = 1) AS likes,
-               0 AS dislikes
-        FROM reviews r
-        JOIN businesses b ON r.business_id = b.id
-        JOIN users u ON r.user_id = u.id
-        WHERE r.business_id = ?
-        ORDER BY r.created_at DESC
-    `;
-    db.query(query, [req.params.businessId], (err, results) => {
-        if (err) {
-            console.error('Error fetching business reviews:', err);
-            return res.status(500).json({ error: 'Error fetching business reviews' });
-        }
-        res.json(results);
-    });
+router.get('/business/:businessId', async (req, res) => {
+    const { businessId } = req.params;
+
+    try {
+        const reviews = await Review.find({ business_id: businessId })
+            .populate('user_id', 'name points')
+            .populate('business_id', 'name division category address')
+            .sort({ createdAt: -1 })
+            .lean();
+
+        const reviewIds = reviews.map(r => r._id);
+        const likesCounts = await ReviewLike.aggregate([
+            { $match: { review_id: { $in: reviewIds }, is_like: true } },
+            { $group: { _id: '$review_id', count: { $sum: 1 } } }
+        ]);
+
+        const likesMap = {};
+        likesCounts.forEach(item => {
+            likesMap[item._id.toString()] = item.count;
+        });
+
+        const formattedReviews = reviews.map(r => ({
+            id: r._id.toString(),
+            user_id: r.user_id._id.toString(),
+            rating: r.rating,
+            text: r.text,
+            created_at: r.createdAt,
+            updated_at: r.updatedAt,
+            business_name: r.business_id.name,
+            division: r.business_id.division,
+            category: r.business_id.category,
+            address: r.business_id.address,
+            username: r.user_id.name,
+            points: r.user_id.points,
+            likes: likesMap[r._id.toString()] || 0,
+            dislikes: 0
+        }));
+
+        res.json(formattedReviews);
+    } catch (err) {
+        console.error('Error fetching business reviews:', err);
+        res.status(500).json({ error: 'Error fetching business reviews' });
+    }
 });
 
 // GET all reviews for a specific business (with media inline)
-router.get('/business/name/:businessName', (req, res) => {
+router.get('/business/name/:businessName', async (req, res) => {
     const { businessName } = req.params;
 
-    const query = `
-        SELECT 
-            r.id AS review_id, r.user_id, r.rating, r.text, r.created_at, r.updated_at,
-            b.name AS business_name, b.division, b.category, b.address,
-            u.name AS username, u.points,
-            m.id AS media_id, m.media_url, m.media_type,
-            (SELECT COUNT(*) FROM review_likes WHERE review_id = r.id AND is_like = 1) AS likes,
-            0 AS dislikes
-        FROM reviews r
-        JOIN businesses b ON r.business_id = b.id
-        JOIN users u ON r.user_id = u.id
-        LEFT JOIN media m ON r.business_id = m.business_id
-        WHERE b.name = ?
-        ORDER BY r.created_at DESC
-    `;
-
-    db.query(query, [businessName], (err, results) => {
-        if (err) {
-            console.error('Error fetching reviews for business:', err);
-            return res.status(500).json({ error: 'Error fetching reviews for this business' });
-        }
-
-        if (results.length === 0) {
+    try {
+        const business = await Business.findOne({ name: businessName });
+        
+        if (!business) {
             return res.status(404).json({ message: 'No reviews found for this business' });
         }
 
-        // 🧠 Group media by review (same structure as global /reviews)
-        const reviewsMap = new Map();
+        const reviews = await Review.find({ business_id: business._id })
+            .populate('user_id', 'name points')
+            .populate('business_id', 'name division category address')
+            .sort({ createdAt: -1 })
+            .lean();
 
-        results.forEach(row => {
-            if (!reviewsMap.has(row.review_id)) {
-                reviewsMap.set(row.review_id, {
-                    id: row.review_id,
-                    user_id: row.user_id,
-                    username: row.username,
-                    points: row.points,
-                    rating: row.rating,
-                    text: row.text,
-                    created_at: row.created_at,
-                    updated_at: row.updated_at,
-                    business: {
-                        name: row.business_name,
-                        division: row.division,
-                        category: row.category,
-                        address: row.address
-                    },
-                    media: [],
-                    likes: row.likes,
-                    dislikes: row.dislikes
-                });
-            }
+        const allMedia = await Media.find({ business_id: business._id }).lean();
+        const reviewIds = reviews.map(r => r._id);
+        
+        const likesCounts = await ReviewLike.aggregate([
+            { $match: { review_id: { $in: reviewIds }, is_like: true } },
+            { $group: { _id: '$review_id', count: { $sum: 1 } } }
+        ]);
 
-            if (row.media_id && row.media_url) {
-                reviewsMap.get(row.review_id).media.push({
-                    id: row.media_id,
-                    url: row.media_url,
-                    type: row.media_type
-                });
-            }
+        const likesMap = {};
+        likesCounts.forEach(item => {
+            likesMap[item._id.toString()] = item.count;
         });
 
-        const reviews = Array.from(reviewsMap.values());
-        res.json(reviews);
-    });
+        const mediaList = allMedia.map(m => ({
+            id: m._id.toString(),
+            url: m.media_url,
+            type: m.media_type
+        }));
+
+        const formattedReviews = reviews.map(r => ({
+            id: r._id.toString(),
+            user_id: r.user_id._id.toString(),
+            username: r.user_id.name,
+            points: r.user_id.points,
+            rating: r.rating,
+            text: r.text,
+            created_at: r.createdAt,
+            updated_at: r.updatedAt,
+            business: {
+                name: r.business_id.name,
+                division: r.business_id.division,
+                category: r.business_id.category,
+                address: r.business_id.address
+            },
+            media: mediaList,
+            likes: likesMap[r._id.toString()] || 0,
+            dislikes: 0
+        }));
+
+        res.json(formattedReviews);
+    } catch (err) {
+        console.error('Error fetching reviews for business:', err);
+        res.status(500).json({ error: 'Error fetching reviews for this business' });
+    }
 });
 
 // GET a single review by ID (with media inline)
-router.get('/:id', (req, res) => {
+router.get('/:id', async (req, res) => {
     const { id } = req.params;
 
-    const query = `
-        SELECT 
-            r.id AS review_id, r.user_id, r.rating, r.text, r.created_at, r.updated_at,
-            b.name AS business_name, b.division, b.category, b.address,
-            u.name AS username, u.points,
-            m.id AS media_id, m.media_url, m.media_type,
-            (SELECT COUNT(*) FROM review_likes WHERE review_id = r.id AND is_like = 1) AS likes,
-            0 AS dislikes
-        FROM reviews r
-        JOIN businesses b ON r.business_id = b.id
-        JOIN users u ON r.user_id = u.id
-        LEFT JOIN media m ON r.business_id = m.business_id
-        WHERE r.id = ?
-    `;
+    try {
+        const review = await Review.findById(id)
+            .populate('user_id', 'name points')
+            .populate('business_id', 'name division category address')
+            .lean();
 
-    db.query(query, [id], (err, results) => {
-        if (err) {
-            console.error('Error fetching review:', err);
-            return res.status(500).json({ error: 'Error fetching review' });
-        }
-
-        if (results.length === 0) {
+        if (!review) {
             return res.status(404).json({ message: 'Review not found' });
         }
 
-        const row = results[0];
+        const [media, likesCount] = await Promise.all([
+            Media.find({ business_id: review.business_id._id }).lean(),
+            ReviewLike.countDocuments({ review_id: id, is_like: true })
+        ]);
 
-        // Build review object
-        const review = {
-            id: row.review_id,
-            user_id: row.user_id,
-            username: row.username,
-            points: row.points,
-            rating: row.rating,
-            text: row.text,
-            created_at: row.created_at,
-            updated_at: row.updated_at,
+        const reviewObj = {
+            id: review._id.toString(),
+            user_id: review.user_id._id.toString(),
+            username: review.user_id.name,
+            points: review.user_id.points,
+            rating: review.rating,
+            text: review.text,
+            created_at: review.createdAt,
+            updated_at: review.updatedAt,
             business: {
-                name: row.business_name,
-                division: row.division,
-                category: row.category,
-                address: row.address
+                name: review.business_id.name,
+                division: review.business_id.division,
+                category: review.business_id.category,
+                address: review.business_id.address
             },
-            media: [],
-            likes: row.likes,
-            dislikes: row.dislikes
+            media: media.map(m => ({
+                id: m._id.toString(),
+                url: m.media_url,
+                type: m.media_type
+            })),
+            likes: likesCount,
+            dislikes: 0
         };
 
-        // Add all media
-        results.forEach(r => {
-            if (r.media_id && r.media_url) {
-                review.media.push({
-                    id: r.media_id,
-                    url: r.media_url,
-                    type: r.media_type
-                });
-            }
-        });
-
-        res.json(review);
-    });
+        res.json(reviewObj);
+    } catch (err) {
+        console.error('Error fetching review:', err);
+        res.status(500).json({ error: 'Error fetching review' });
+    }
 });
 
 // POST a new review with subscription, business, media, points logic
-router.post('/', authenticateJWT, upload.array('media', 4), (req, res) => {
-    // Use req.user.id from JWT, not from body
+router.post('/', authenticateJWT, upload.array('media', 4), async (req, res) => {
     const user_id = req.user.id;
     const {
         business_name,
@@ -496,13 +464,12 @@ router.post('/', authenticateJWT, upload.array('media', 4), (req, res) => {
         description,
         location,
         contact,
-        latitude,  // From Google Places
-        longitude, // From Google Places
-        place_id   // From Google Places (for future use)
+        latitude,
+        longitude,
+        place_id
     } = req.body;
     const mediaFiles = Array.isArray(req.files) ? req.files : [];
 
-    // Debug logging
     console.log('📝 Review submission received:');
     console.log('  - business_name:', business_name);
     console.log('  - user_id:', user_id);
@@ -518,265 +485,210 @@ router.post('/', authenticateJWT, upload.array('media', 4), (req, res) => {
         return res.status(400).json({ error: 'Business name is required' });
     }
 
-    // STEP 1: Check subscription uploads remaining
-    const subQuery = 'SELECT id, uploads_remaining FROM subscriptions WHERE user_id = ? AND expiry_date > NOW()';
-    db.query(subQuery, [user_id], (err, subs) => {
-        if (err) {
-            console.error('Subscription check error:', err);
-            return res.status(500).json({ error: 'Database error checking subscription' });
-        }
+    try {
+        // STEP 1: Check subscription uploads remaining
+        const subscription = await Subscription.findOne({
+            user_id,
+            expiry_date: { $gt: new Date() }
+        });
 
-        if (subs.length === 0 || subs[0].uploads_remaining <= 0) {
+        if (!subscription || subscription.uploads_remaining <= 0) {
             return res.status(403).json({ error: 'No uploads left. Please renew your subscription.' });
         }
 
-        // STEP 2: Check if business exists (by name, or by name and address if address is provided)
-        // If we have a place_id in the future, we can check by that first
-        let businessQuery;
-        let queryParams;
-        
+        // STEP 2: Check if business exists
+        let business;
         if (address && address.trim() !== '') {
-            // Check by name AND address for better uniqueness
-            businessQuery = 'SELECT id FROM businesses WHERE name = ? AND address = ? LIMIT 1';
-            queryParams = [business_name, address];
+            business = await Business.findOne({ name: business_name, address: address });
         } else {
-            // If no address, just check by name (less precise but works)
-            businessQuery = 'SELECT id FROM businesses WHERE name = ? LIMIT 1';
-            queryParams = [business_name];
+            business = await Business.findOne({ name: business_name });
         }
-        
-        db.query(businessQuery, queryParams, (err, businessResult) => {
-            if (err) {
-                console.error('Business check error:', err);
-                return res.status(500).json({ error: 'Database error checking business' });
-            }
 
-            let businessId;
-            if (businessResult.length > 0) {
-                businessId = businessResult[0].id;
-                
-                // 🎮 ANTI-GAMING: Check if user already reviewed this business in last 7 days
-                const recentReviewCheck = `
-                    SELECT id, created_at FROM reviews 
-                    WHERE user_id = ? AND business_id = ? 
-                    AND created_at > DATE_SUB(NOW(), INTERVAL 7 DAY)
-                `;
-                db.query(recentReviewCheck, [user_id, businessId], (err, recentReviews) => {
-                    if (err) {
-                        console.error('Recent review check error:', err);
-                        return res.status(500).json({ error: 'Database error' });
-                    }
+        let businessId;
 
-                    if (recentReviews.length > 0) {
-                        return res.status(429).json({ 
-                            error: 'You can only review this business once every 7 days',
-                            lastReview: recentReviews[0].created_at
-                        });
-                    }
+        if (business) {
+            businessId = business._id;
 
-                    insertReview();
+            // 🎮 ANTI-GAMING: Check if user already reviewed this business in last 7 days
+            const sevenDaysAgo = new Date();
+            sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+
+            const recentReview = await Review.findOne({
+                user_id,
+                business_id: businessId,
+                createdAt: { $gt: sevenDaysAgo }
+            });
+
+            if (recentReview) {
+                return res.status(429).json({
+                    error: 'You can only review this business once every 7 days',
+                    lastReview: recentReview.createdAt
                 });
+            }
+        } else {
+            // Insert new business if it doesn't exist
+            const hasCoordinates = latitude && longitude && !isNaN(latitude) && !isNaN(longitude);
+
+            if (hasCoordinates) {
+                console.log(`📍 Using Google Places coordinates: ${latitude}, ${longitude}`);
+                business = new Business({
+                    name: business_name,
+                    category: category || null,
+                    description: description || null,
+                    location: location || null,
+                    division: division || null,
+                    address: address || null,
+                    contact: contact || null,
+                    latitude: parseFloat(latitude),
+                    longitude: parseFloat(longitude),
+                    place_id: place_id || null
+                });
+                await business.save();
+                businessId = business._id;
+                console.log(`✅ Business created with GPS coordinates from Google Places`);
             } else {
-                // Insert new business if it doesn't exist
-                // 🗺️ Step 2a: Use coordinates from Google Places if provided, otherwise geocode
-                const hasCoordinates = latitude && longitude && !isNaN(latitude) && !isNaN(longitude);
-                
-                if (hasCoordinates) {
-                    // Use coordinates directly from Google Places (more accurate)
-                    console.log(`📍 Using Google Places coordinates: ${latitude}, ${longitude}`);
-                    const insertBusiness = `
-                        INSERT INTO businesses (name, category, description, location, division, address, contact, latitude, longitude) 
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    `;
-                    
-                    db.query(
-                        insertBusiness,
-                        [
-                            business_name,
-                            category || null,
-                            description || null,
-                            location || null,
-                            division || null,
-                            address || null,
-                            contact || null,
-                            parseFloat(latitude),
-                            parseFloat(longitude)
-                        ],
-                        (err, result) => {
-                            if (err) {
-                                console.error('Insert business error:', err);
-                                return res.status(500).json({ error: 'Error adding business' });
-                            }
-                            businessId = result.insertId;
-                            console.log(`✅ Business created with GPS coordinates from Google Places`);
-                            insertReview();
-                        }
-                    );
-                } else {
-                    // Fallback to geocoding if coordinates not provided
-                    const fullAddress = `${business_name}, ${address || ''}, ${location || ''}, ${division || ''}`.trim();
-                    console.log(`🗺️ Geocoding address: ${fullAddress}`);
-                    
-                    getCoordinatesFromAddress(fullAddress).then(coords => {
-                        const insertBusiness = `
-                            INSERT INTO businesses (name, category, description, location, division, address, contact, latitude, longitude) 
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        `;
-                        
-                        db.query(
-                            insertBusiness,
-                            [
-                                business_name,
-                                category || null,
-                                description || null,
-                                location || null,
-                                division || null,
-                                address || null,
-                                contact || null,
-                                coords?.latitude || null,
-                                coords?.longitude || null
-                            ],
-                            (err, result) => {
-                                if (err) {
-                                    console.error('Insert business error:', err);
-                                    return res.status(500).json({ error: 'Error adding business' });
-                                }
-                                businessId = result.insertId;
-                                
-                                if (coords) {
-                                    console.log(`📍 Business coordinates saved via geocoding: ${coords.latitude}, ${coords.longitude}`);
-                                } else {
-                                    console.log('⚠️ Could not geocode address - GPS check-in will not work for this business');
-                                }
-                                
-                                insertReview();
-                            }
-                        );
-                    }).catch(err => {
-                        console.error('Geocoding error:', err);
-                        // Continue anyway without coordinates
-                        const insertBusiness = `
-                            INSERT INTO businesses (name, category, description, location, division, address, contact) 
-                            VALUES (?, ?, ?, ?, ?, ?, ?)
-                        `;
-                        db.query(
-                            insertBusiness,
-                            [
-                                business_name,
-                                category || null,
-                                description || null,
-                                location || null,
-                                division || null,
-                                address || null,
-                                contact || null
-                            ],
-                            (err, result) => {
-                                if (err) {
-                                    console.error('Insert business error:', err);
-                                    return res.status(500).json({ error: 'Error adding business' });
-                                }
-                                businessId = result.insertId;
-                                console.log('⚠️ Business created without GPS coordinates');
-                                insertReview();
-                            }
-                        );
+                // Fallback to geocoding
+                const fullAddress = `${business_name}, ${address || ''}, ${location || ''}, ${division || ''}`.trim();
+                console.log(`🗺️ Geocoding address: ${fullAddress}`);
+
+                try {
+                    const coords = await getCoordinatesFromAddress(fullAddress);
+                    business = new Business({
+                        name: business_name,
+                        category: category || null,
+                        description: description || null,
+                        location: location || null,
+                        division: division || null,
+                        address: address || null,
+                        contact: contact || null,
+                        latitude: coords?.latitude || null,
+                        longitude: coords?.longitude || null,
+                        place_id: place_id || null
                     });
+                    await business.save();
+                    businessId = business._id;
+
+                    if (coords) {
+                        console.log(`📍 Business coordinates saved via geocoding: ${coords.latitude}, ${coords.longitude}`);
+                    } else {
+                        console.log('⚠️ Could not geocode address - GPS check-in will not work for this business');
+                    }
+                } catch (geocodeErr) {
+                    console.error('Geocoding error:', geocodeErr);
+                    // Continue anyway without coordinates
+                    business = new Business({
+                        name: business_name,
+                        category: category || null,
+                        description: description || null,
+                        location: location || null,
+                        division: division || null,
+                        address: address || null,
+                        contact: contact || null,
+                        place_id: place_id || null
+                    });
+                    await business.save();
+                    businessId = business._id;
+                    console.log('⚠️ Business created without GPS coordinates');
                 }
             }
+        }
 
-            // STEP 3: Insert review
-            function insertReview() {
-                const reviewQuery = `
-                    INSERT INTO reviews (user_id, business_id, rating, text, tags) 
-                    VALUES (?, ?, ?, ?, ?)
-                `;
-                db.query(
-                    reviewQuery,
-                    [user_id, businessId, rating || null, text, JSON.stringify(tags || [])],
-                    (err, reviewResult) => {
-                        if (err) {
-                            console.error('Review insert error:', err);
-                            return res.status(500).json({ error: 'Error saving review' });
-                        }
+        // STEP 3: Insert review
+        let tagsArray = [];
 
-                        const reviewId = reviewResult.insertId;
+if (Array.isArray(tags)) {
+    tagsArray = tags;
+} else if (typeof tags === 'string') {
+    try {
+        tagsArray = JSON.parse(tags);
+    } catch {
+        tagsArray = tags.split(',').map(t => t.trim()).filter(Boolean);
+    }
+}
 
-                        // STEP 4: Handle media upload if exists (up to 4 files, image/video)
-                        if (mediaFiles.length > 0) {
-                            const mediaQuery = `
-                                INSERT INTO media (business_id, media_url, media_type)
-                                VALUES (?, ?, ?)
-                            `;
-                            mediaFiles.forEach((file) => {
-                                const inferredType = file.mimetype && file.mimetype.startsWith('video') ? 'video' : 'image';
-                                db.query(mediaQuery, [businessId, file.filename, inferredType], (err) => {
-                                    if (err) console.error('Media insert error:', err);
-                                });
-                            });
-                        }
-
-                        // STEP 5: Points calculation
-                        let pointsToAdd = 10; // Base review points
-                        if (mediaFiles.length > 0) pointsToAdd += 5; // Media bonus (flat)
-
-                        // Check if this is the first review for the business
-                        const firstReviewQuery = 'SELECT COUNT(*) AS count FROM reviews WHERE business_id = ?';
-                        db.query(firstReviewQuery, [businessId], (err, countResult) => {
-                            if (!err && countResult[0].count === 1) {
-                                pointsToAdd *= 2; // double if first review
-                            }
-
-                            // 🎮 Use gamification system with daily cap
-                            awardPoints(user_id, pointsToAdd, (err, actualPointsAwarded) => {
-                                if (err) console.error('Points award error:', err);
-
-                                // STEP 6: Check for achievements
-                                checkMilestones(user_id, (err, newAchievements) => {
-                                    if (err) console.error('Milestone check error:', err);
-
-                                    // STEP 7: Decrement uploads from subscription
-                                    const updateSubs = 'UPDATE subscriptions SET uploads_remaining = uploads_remaining - 1 WHERE id = ?';
-                                    db.query(updateSubs, [subs[0].id], (err) => {
-                                        if (err) console.error('Subscription update error:', err);
-                                    });
-
-                                    res.json({ 
-                                        message: 'Review submitted successfully', 
-                                        review_id: reviewId, 
-                                        points_awarded: actualPointsAwarded,
-                                        new_achievements: newAchievements || []
-                                    });
-                                });
-                            });
-                        });
-                    }
-                );
-            }
+        
+        const review = new Review({
+            user_id,
+            business_id: businessId,
+            rating: rating || null,
+            text: text || null,
+            tags: tagsArray
         });
-    });
+
+        const savedReview = await review.save();
+        const reviewId = savedReview._id.toString();
+
+        // STEP 4: Handle media upload if exists
+        if (mediaFiles.length > 0) {
+            const mediaPromises = mediaFiles.map(file => {
+                const inferredType = file.mimetype && file.mimetype.startsWith('video') ? 'video' : 'image';
+                const media = new Media({
+                    business_id: businessId,
+                    review_id: savedReview._id,
+                    media_url: file.filename,
+                    media_type: inferredType
+                });
+                return media.save();
+            });
+            await Promise.all(mediaPromises);
+        }
+
+        // STEP 5: Points calculation
+        let pointsToAdd = 10; // Base review points
+        if (mediaFiles.length > 0) pointsToAdd += 5; // Media bonus
+
+        // Check if this is the first review for the business
+        const reviewCount = await Review.countDocuments({ business_id: businessId });
+        if (reviewCount === 1) {
+            pointsToAdd *= 2; // double if first review
+        }
+
+        // 🎮 Use gamification system with daily cap
+        awardPoints(user_id, pointsToAdd, async (err, actualPointsAwarded) => {
+            if (err) console.error('Points award error:', err);
+
+            // STEP 6: Check for achievements
+            checkMilestones(user_id, (err2, newAchievements) => {
+                if (err2) console.error('Milestone check error:', err2);
+
+                // STEP 7: Decrement uploads from subscription
+                subscription.uploads_remaining -= 1;
+                subscription.save().catch(err => {
+                    console.error('Subscription update error:', err);
+                });
+
+                res.json({
+                    message: 'Review submitted successfully',
+                    review_id: reviewId,
+                    points_awarded: actualPointsAwarded,
+                    new_achievements: newAchievements || []
+                });
+            });
+        });
+    } catch (err) {
+        console.error('Review submission error:', err);
+        res.status(500).json({ error: 'Error saving review' });
+    }
 });
 
 // React to a review (like/dislike) with author points adjustment
-router.post('/:id/react', authenticateJWT, (req, res) => {
+router.post('/:id/react', authenticateJWT, async (req, res) => {
     const reviewId = req.params.id;
-    const user_id = req.user.id; // Get from JWT token
+    const user_id = req.user.id;
     const { reaction } = req.body;
 
     if (!['like', 'none'].includes(reaction)) {
         return res.status(400).json({ error: 'Invalid reaction. Must be: like or none' });
     }
 
-    // Step 1: Get review author
-    db.query('SELECT user_id FROM reviews WHERE id = ?', [reviewId], (err, reviews) => {
-        if (err) {
-            return res.status(500).json({ error: 'Database error', details: err.message });
-        }
-
-        if (reviews.length === 0) {
+    try {
+        // Step 1: Get review author
+        const review = await Review.findById(reviewId);
+        if (!review) {
             return res.status(404).json({ error: 'Review not found' });
         }
 
-        const authorId = reviews[0].user_id;
+        const authorId = review.user_id.toString();
 
         // 🎮 ANTI-GAMING: Prevent self-likes
         if (authorId === user_id) {
@@ -784,111 +696,103 @@ router.post('/:id/react', authenticateJWT, (req, res) => {
         }
 
         // Step 2: Check existing reaction
-        const checkQuery = 'SELECT is_like FROM review_likes WHERE user_id = ? AND review_id = ?';
-        db.query(checkQuery, [user_id, reviewId], (err2, existingReaction) => {
-            if (err2) {
-                return res.status(500).json({ error: 'Database error' });
+        const existingReaction = await ReviewLike.findOne({
+            user_id,
+            review_id: reviewId
+        });
+
+        const hadReaction = !!existingReaction;
+        const previousIsLike = hadReaction ? existingReaction.is_like : null;
+
+        // Step 3: Calculate point changes for author
+        let pointsChange = 0;
+
+        if (reaction === 'none') {
+            if (previousIsLike === true) {
+                pointsChange = -2; // remove like bonus
             }
+        } else {
+            // reaction === 'like'
+            if (!hadReaction) {
+                pointsChange = 2; // new like
+            } else if (previousIsLike !== true) {
+                pointsChange = 2; // normalize to like
+            }
+        }
 
-            const hadReaction = existingReaction.length > 0;
-            const previousIsLike = hadReaction ? existingReaction[0].is_like : null;
-
-            // Step 3: Calculate point changes for author
-            let pointsChange = 0;
-
-            if (reaction === 'none') {
-                if (previousIsLike === 1) {
-                    pointsChange = -2; // remove like bonus
-                }
+        // Step 4: Update or delete reaction
+        if (reaction === 'none') {
+            if (existingReaction) {
+                await ReviewLike.deleteOne({ _id: existingReaction._id });
+            }
+            applyPointsChange(authorId, pointsChange, res);
+        } else {
+            // Insert or update reaction
+            if (existingReaction) {
+                existingReaction.is_like = true;
+                await existingReaction.save();
             } else {
-                // reaction === 'like'
-                if (!hadReaction) {
-                    pointsChange = 2; // new like
-                } else if (previousIsLike !== 1) {
-                    // if table ever had other values, normalize to like
-                    pointsChange = 2;
-                }
+                const newLike = new ReviewLike({
+                    user_id,
+                    review_id: reviewId,
+                    is_like: true
+                });
+                await newLike.save();
+            }
+            applyPointsChange(authorId, pointsChange, res);
+        }
+
+        function applyPointsChange(authorId, points, res) {
+            if (points === 0) {
+                return res.json({ message: 'Reaction updated', points_change: 0 });
             }
 
-            // Step 4: Update or delete reaction
-            if (reaction === 'none') {
-                // Delete reaction
-                db.query('DELETE FROM review_likes WHERE user_id = ? AND review_id = ?', 
-                    [user_id, reviewId], (err3) => {
-                        if (err3) {
-                            return res.status(500).json({ error: 'Failed to remove reaction' });
-                        }
-
-                        // Apply points change
-                        applyPointsChange(authorId, pointsChange, res);
+            if (points > 0) {
+                awardPoints(authorId, points, (err5, actualPoints) => {
+                    if (err5) console.error('Points award error:', err5);
+                    res.json({
+                        message: 'Reaction recorded',
+                        points_change: actualPoints
                     });
+                });
             } else {
-                // Insert or update reaction
-                const newIsLike = 1;
-                const upsertQuery = `
-                    INSERT INTO review_likes (user_id, review_id, is_like)
-                    VALUES (?, ?, ?)
-                    ON DUPLICATE KEY UPDATE is_like = VALUES(is_like)
-                `;
-
-                db.query(upsertQuery, [user_id, reviewId, newIsLike], (err4) => {
-                    if (err4) {
-                        return res.status(500).json({ error: 'Database error', details: err4.message });
-                    }
-
-                    // Apply points change
-                    applyPointsChange(authorId, pointsChange, res);
+                deductPoints(authorId, Math.abs(points), (err6) => {
+                    if (err6) console.error('Points deduct error:', err6);
+                    res.json({
+                        message: 'Reaction recorded',
+                        points_change: points
+                    });
                 });
             }
-
-            function applyPointsChange(authorId, points, res) {
-                if (points === 0) {
-                    return res.json({ message: 'Reaction updated', points_change: 0 });
-                }
-
-                if (points > 0) {
-                    awardPoints(authorId, points, (err5, actualPoints) => {
-                        if (err5) console.error('Points award error:', err5);
-                        res.json({ 
-                            message: 'Reaction recorded', 
-                            points_change: actualPoints 
-                        });
-                    });
-                } else {
-                    deductPoints(authorId, Math.abs(points), (err6) => {
-                        if (err6) console.error('Points deduct error:', err6);
-                        res.json({ 
-                            message: 'Reaction recorded', 
-                            points_change: points 
-                        });
-                    });
-                }
-            }
-        });
-    });
+        }
+    } catch (err) {
+        console.error('Reaction error:', err);
+        res.status(500).json({ error: 'Database error', details: err.message });
+    }
 });
 
 // Get reactions (likes/dislikes) for a review
-router.get('/:id/reactions', (req, res) => {
+router.get('/:id/reactions', async (req, res) => {
     const reviewId = req.params.id;
 
-    const likesQuery = `
-        SELECT COUNT(*) as likes FROM review_likes
-        WHERE review_id = ? AND is_like = 1
-    `;
-
-    db.query(likesQuery, [reviewId], (err, likesResult) => {
-        if (err) return res.status(500).json({ error: 'Server error.' });
+    try {
+        const likes = await ReviewLike.countDocuments({
+            review_id: reviewId,
+            is_like: true
+        });
 
         res.json({
-            likes: likesResult[0].likes,
+            likes,
             dislikes: 0
         });
-    });
+    } catch (err) {
+        console.error('Error fetching reactions:', err);
+        res.status(500).json({ error: 'Server error.' });
+    }
 });
 
 // Get a user's reaction to a review
-router.get('/:id/reaction', (req, res) => {
+router.get('/:id/reaction', async (req, res) => {
     const reviewId = req.params.id;
     const userId = req.query.user_id;
 
@@ -896,272 +800,92 @@ router.get('/:id/reaction', (req, res) => {
         return res.status(400).json({ error: 'user_id is required as a query parameter' });
     }
 
-    const query = `
-        SELECT is_like FROM review_likes WHERE review_id = ? AND user_id = ?
-    `;
+    try {
+        const reaction = await ReviewLike.findOne({
+            review_id: reviewId,
+            user_id: userId
+        });
 
-    db.query(query, [reviewId, userId], (err, rows) => {
-        if (err) {
-            return res.status(500).json({ error: 'Database error', details: err.message });
-        }
-        if (rows.length > 0) {
-            // Convert is_like integer back to 'like' or 'dislike'
-            const reaction = rows[0].is_like === 1 ? 'like' : 'dislike';
-            res.json({ reaction });
+        if (reaction) {
+            const reactionType = reaction.is_like === true ? 'like' : 'dislike';
+            res.json({ reaction: reactionType });
         } else {
-            res.json({ reaction: null }); // No reaction yet
+            res.json({ reaction: null });
         }
-    });
-});
-
-// GET all reviews with business + media info (returns media as array)
-router.get('/', (req, res) => {
-    const query = `
-        SELECT 
-            r.id AS review_id, r.user_id, r.rating, r.text, r.created_at, r.updated_at,
-            b.name AS business_name, b.division, b.category, b.address,
-            u.name AS username, u.points,
-            m.id AS media_id, m.media_url, m.media_type,
-            (SELECT COUNT(*) FROM review_likes WHERE review_id = r.id AND is_like = 1) AS likes,
-            (SELECT COUNT(*) FROM review_likes WHERE review_id = r.id AND is_like = 0) AS dislikes
-        FROM reviews r
-        JOIN businesses b ON r.business_id = b.id
-        JOIN users u ON r.user_id = u.id
-        LEFT JOIN media m ON r.business_id = m.business_id
-        ORDER BY r.created_at DESC
-    `;
-
-    db.query(query, (err, results) => {
-        if (err) {
-            console.error('Error fetching all reviews:', err);
-            return res.status(500).json({ error: 'Error fetching all reviews' });
-        }
-
-        // 🧠 Rebuild response to group media by review
-        const reviewsMap = new Map();
-
-        results.forEach(row => {
-            if (!reviewsMap.has(row.review_id)) {
-                reviewsMap.set(row.review_id, {
-                    id: row.review_id,
-                    user_id: row.user_id,
-                    username: row.username,
-                    points: row.points,
-                    rating: row.rating,
-                    text: row.text,
-                    created_at: row.created_at,
-                    updated_at: row.updated_at,
-                    business: {
-                        name: row.business_name,
-                        division: row.division,
-                        category: row.category,
-                        address: row.address
-                    },
-                    media: [],
-                    likes: row.likes,
-                    dislikes: row.dislikes
-                });
-            }
-
-            if (row.media_id && row.media_url) {
-                reviewsMap.get(row.review_id).media.push({
-                    id: row.media_id,
-                    url: row.media_url,
-                    type: row.media_type
-                });
-            }
-        });
-
-        // Convert map → array
-        const reviews = Array.from(reviewsMap.values());
-        res.json(reviews);
-    });
-});
-
-// Get all reviews with business info (global)
-router.get('/all', (req, res) => {
-    const query = `
-        SELECT r.id, r.user_id, r.rating, r.text, r.created_at, r.updated_at,
-               b.name AS business_name, b.division, b.category, b.address,
-               u.name AS username, u.points,
-               (SELECT COUNT(*) FROM review_likes WHERE review_id = r.id AND is_like = 1) AS likes,
-               (SELECT COUNT(*) FROM review_likes WHERE review_id = r.id AND is_like = 0) AS dislikes
-        FROM reviews r
-        JOIN businesses b ON r.business_id = b.id
-        JOIN users u ON r.user_id = u.id
-        ORDER BY r.created_at DESC
-    `;
-
-    db.query(query, (err, results) => {
-        if (err) {
-            console.error('Error fetching reviews:', err);
-            return res.status(500).json({ error: 'Error fetching reviews' });
-        }
-        res.json(results);
-    });
-});
-
-// GET reviews by business ID
-router.get('/business/:businessId', (req, res) => {
-    const query = `
-        SELECT r.id, r.user_id, r.rating, r.text, r.created_at, r.updated_at,
-               b.name AS business_name, b.division, b.category, b.address,
-               u.name AS username, u.points,
-               (SELECT COUNT(*) FROM review_likes WHERE review_id = r.id AND is_like = 1) AS likes,
-               (SELECT COUNT(*) FROM review_likes WHERE review_id = r.id AND is_like = 0) AS dislikes
-        FROM reviews r
-        JOIN businesses b ON r.business_id = b.id
-        JOIN users u ON r.user_id = u.id
-        WHERE r.business_id = ?
-        ORDER BY r.created_at DESC
-    `;
-    db.query(query, [req.params.businessId], (err, results) => {
-        if (err) {
-            console.error('Error fetching business reviews:', err);
-            return res.status(500).json({ error: 'Error fetching business reviews' });
-        }
-        res.json(results);
-    });
-});
-
-// GET all reviews for a specific business (with media inline)
-router.get('/business/name/:businessName', (req, res) => {
-    const { businessName } = req.params;
-
-    const query = `
-        SELECT 
-            r.id AS review_id, r.user_id, r.rating, r.text, r.created_at, r.updated_at,
-            b.name AS business_name, b.division, b.category, b.address,
-            u.name AS username, u.points,
-            m.id AS media_id, m.media_url, m.media_type,
-            (SELECT COUNT(*) FROM review_likes WHERE review_id = r.id AND is_like = 1) AS likes,
-            (SELECT COUNT(*) FROM review_likes WHERE review_id = r.id AND is_like = 0) AS dislikes
-        FROM reviews r
-        JOIN businesses b ON r.business_id = b.id
-        JOIN users u ON r.user_id = u.id
-        LEFT JOIN media m ON r.business_id = m.business_id
-        WHERE b.name = ?
-        ORDER BY r.created_at DESC
-    `;
-
-    db.query(query, [businessName], (err, results) => {
-        if (err) {
-            console.error('Error fetching reviews for business:', err);
-            return res.status(500).json({ error: 'Error fetching reviews for this business' });
-        }
-
-        if (results.length === 0) {
-            return res.status(404).json({ message: 'No reviews found for this business' });
-        }
-
-        // 🧠 Group media by review (same structure as global /reviews)
-        const reviewsMap = new Map();
-
-        results.forEach(row => {
-            if (!reviewsMap.has(row.review_id)) {
-                reviewsMap.set(row.review_id, {
-                    id: row.review_id,
-                    user_id: row.user_id,
-                    username: row.username,
-                    points: row.points,
-                    rating: row.rating,
-                    text: row.text,
-                    created_at: row.created_at,
-                    updated_at: row.updated_at,
-                    business: {
-                        name: row.business_name,
-                        division: row.division,
-                        category: row.category,
-                        address: row.address
-                    },
-                    media: [],
-                    likes: row.likes,
-                    dislikes: row.dislikes
-                });
-            }
-
-            if (row.media_id && row.media_url) {
-                reviewsMap.get(row.review_id).media.push({
-                    id: row.media_id,
-                    url: row.media_url,
-                    type: row.media_type
-                });
-            }
-        });
-
-        const reviews = Array.from(reviewsMap.values());
-        res.json(reviews);
-    });
+    } catch (err) {
+        console.error('Error fetching user reaction:', err);
+        res.status(500).json({ error: 'Database error', details: err.message });
+    }
 });
 
 // Delete a review
-router.delete('/:id', authenticateJWT, (req, res) => {
+router.delete('/:id', authenticateJWT, async (req, res) => {
     const reviewId = req.params.id;
-    const userId = req.user.id; // Assumes you're using authentication middleware
+    const userId = req.user.id;
 
-    // First check: Is the review owned by the user?
-    const checkQuery = `SELECT * FROM reviews WHERE id = ? AND user_id = ?`;
-    db.query(checkQuery, [reviewId, userId], (err, results) => {
-        if (err) return res.status(500).json({ error: 'Server error.' });
+    try {
+        const review = await Review.findOne({
+            _id: reviewId,
+            user_id: userId
+        });
 
-        if (results.length === 0) {
+        if (!review) {
             return res.status(403).json({ error: 'Not authorized to delete this review.' });
         }
 
-        // Delete the review
-        const deleteQuery = `DELETE FROM reviews WHERE id = ?`;
-        db.query(deleteQuery, [reviewId], (err2) => {
-            if (err2) return res.status(500).json({ error: 'Server error during deletion.' });
-
-            res.json({ message: 'Review deleted successfully.' });
-        });
-    });
+        await Review.deleteOne({ _id: reviewId });
+        res.json({ message: 'Review deleted successfully.' });
+    } catch (err) {
+        console.error('Error deleting review:', err);
+        res.status(500).json({ error: 'Server error during deletion.' });
+    }
 });
 
 // Report a review
-router.post('/:id/report', authenticateJWT, (req, res) => {
+router.post('/:id/report', authenticateJWT, async (req, res) => {
     const reviewId = req.params.id;
-    const userId = req.user.id; // Set by authenticateJWT
+    const userId = req.user.id;
     const { reason } = req.body;
 
     if (!reason || reason.trim() === '') {
         return res.status(400).json({ error: 'Report reason is required.' });
     }
 
-    const insertQuery = `
-        INSERT INTO review_reports (review_id, user_id, reason)
-        VALUES (?, ?, ?)
-    `;
+    try {
+        const report = new ReviewReport({
+            review_id: reviewId,
+            user_id: userId,
+            reason: reason.trim()
+        });
 
-    db.query(insertQuery, [reviewId, userId, reason], (err) => {
-        if (err) {
-            if (err.code === 'ER_DUP_ENTRY') {
-                return res.status(400).json({ error: 'You have already reported this review.' });
-            }
-            return res.status(500).json({ error: 'Server error while reporting review.' });
-        }
-
+        await report.save();
         res.json({ message: 'Review reported successfully.' });
-    });
+    } catch (err) {
+        if (err.code === 11000) {
+            return res.status(400).json({ error: 'You have already reported this review.' });
+        }
+        console.error('Error reporting review:', err);
+        res.status(500).json({ error: 'Server error while reporting review.' });
+    }
 });
 
 // DELETE a review by ID (admin only)
-router.delete('/reported/:id', authenticateJWT, authorizeRole(['admin']), (req, res) => {
+router.delete('/reported/:id', authenticateJWT, authorizeRole(['admin']), async (req, res) => {
     const reviewId = req.params.id;
 
-    const deleteQuery = 'DELETE FROM reviews WHERE id = ?';
-    db.query(deleteQuery, [reviewId], (err, result) => {
-        if (err) {
-            console.error('Error deleting review:', err);
-            return res.status(500).json({ error: 'Server error.' });
-        }
+    try {
+        const review = await Review.findByIdAndDelete(reviewId);
 
-        if (result.affectedRows === 0) {
+        if (!review) {
             return res.status(404).json({ message: 'Review not found.' });
         }
 
         res.json({ message: 'Review deleted successfully.' });
-    });
+    } catch (err) {
+        console.error('Error deleting review:', err);
+        res.status(500).json({ error: 'Server error.' });
+    }
 });
 
 module.exports = router;
+
