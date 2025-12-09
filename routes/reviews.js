@@ -594,18 +594,7 @@ router.post('/', authenticateJWT, upload.array('media', 4), async (req, res) => 
         }
 
         // STEP 3: Insert review
-        let tagsArray = [];
-
-if (Array.isArray(tags)) {
-    tagsArray = tags;
-} else if (typeof tags === 'string') {
-    try {
-        tagsArray = JSON.parse(tags);
-    } catch {
-        tagsArray = tags.split(',').map(t => t.trim()).filter(Boolean);
-    }
-}
-
+        const tagsArray = Array.isArray(tags) ? tags : (tags ? JSON.parse(tags) : []);
         
         const review = new Review({
             user_id,
