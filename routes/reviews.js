@@ -73,6 +73,59 @@ router.get('/reported/all', authenticateJWT, authorizeRole(['admin']), async (re
     }
 });
 
+// GET reviews for currently logged-in user (with media)
+router.get('/my', authenticateJWT, async (req, res) => {
+    const userId = req.user.id;
+
+    try {
+        const reviews = await Review.find({ user_id: userId })
+            .populate('business_id', 'name division category address')
+            .sort({ createdAt: -1 })
+            .lean();
+
+        const reviewIds = reviews.map(r => r._id);
+
+        const media = await Media.find({
+            review_id: { $in: reviewIds }
+        }).lean();
+
+        // Group media by review
+        const mediaByReview = {};
+        media.forEach(m => {
+            const reviewId = m.review_id.toString();
+            if (!mediaByReview[reviewId]) {
+                mediaByReview[reviewId] = [];
+            }
+            mediaByReview[reviewId].push({
+                id: m._id.toString(),
+                url: m.media_url,
+                type: m.media_type
+            });
+        });
+
+        const formatted = reviews.map(r => ({
+            id: r._id.toString(),
+            rating: r.rating,
+            text: r.text,
+            tags: r.tags || [],
+            created_at: r.createdAt,
+            business: {
+                id: r.business_id._id.toString(),
+                name: r.business_id.name,
+                category: r.business_id.category,
+                division: r.business_id.division,
+                address: r.business_id.address
+            },
+            media: mediaByReview[r._id.toString()] || []
+        }));
+
+        res.json(formatted);
+    } catch (err) {
+        console.error('Error fetching user reviews:', err);
+        res.status(500).json({ error: 'Failed to fetch user reviews' });
+    }
+});
+
 // GET all reviews with business + media info (returns media as array)
 router.get('/', async (req, res) => {
     try {
